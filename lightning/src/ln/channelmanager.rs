@@ -426,6 +426,23 @@ pub(super) struct ChannelHolder<Signer: Sign> {
 	/// guarantees are made about the channels given here actually existing anymore by the time you
 	/// go to read them!
 	claimable_htlcs: HashMap<PaymentHash, (events::PaymentPurpose, Vec<ClaimableHTLC>)>,
+	/// `channel_id` -> `counterparty_node_id`.
+	///
+	/// Only `channel_id`s are allowed as keys in this map, and not `temporary_channel_id`s. As
+	/// multiple channels with the same `temporary_channel_id` to different peers can exist,
+	/// allowing `temporary_channel_id`s in this map would cause collisions for such channels.
+	///
+	/// Note that this map should only be used for `MonitorEvent` handling, to be able to access
+	/// the corresponding channel for the event, as we only have access to the `channel_id` during
+	/// the handling of the events.
+	///
+	/// TODO:
+	/// The `counterparty_node_id` can't be passed with `MonitorEvent`s currently, as adding it to
+	/// the `ChannelMonitor`s would break backwards compatability. If `counterparty_node_id`s are
+	/// added to `ChannelMonitor`s in the future, this map should be removed, as only the
+	/// `ChannelManager::per_peer_state` is required to access the channel if the
+	/// `counterparty_node_id` is passed with `MonitorEvent`s.
+	pub(super) id_to_peer: HashMap<[u8; 32], PublicKey>,
 	/// Messages to send to peers - pushed to in the same lock that they are generated in (except
 	/// for broadcast messages, where ordering isn't as strict).
 	pub(super) pending_msg_events: Vec<MessageSendEvent>,
@@ -1228,7 +1245,7 @@ macro_rules! handle_error {
 }
 
 macro_rules! update_maps_on_chan_removal {
-	($self: expr, $short_to_id: expr, $channel: expr) => {
+	($self: expr, $short_to_id: expr, $id_to_peer: expr, $channel: expr) => {
 		if let Some(short_id) = $channel.get_short_channel_id() {
 			$short_to_id.remove(&short_id);
 		} else {
@@ -1241,13 +1258,14 @@ macro_rules! update_maps_on_chan_removal {
 			let alias_removed = $self.outbound_scid_aliases.lock().unwrap().remove(&$channel.outbound_scid_alias());
 			debug_assert!(alias_removed);
 		}
+		$id_to_peer.remove(&$channel.channel_id());
 		$short_to_id.remove(&$channel.outbound_scid_alias());
 	}
 }
 
 /// Returns (boolean indicating if we should remove the Channel object from memory, a mapped error)
 macro_rules! convert_chan_err {
-	($self: ident, $err: expr, $short_to_id: expr, $channel: expr, $channel_id: expr) => {
+	($self: ident, $err: expr, $short_to_id: expr, $id_to_peer: expr, $channel: expr, $channel_id: expr) => {
 		match $err {
 			ChannelError::Warn(msg) => {
 				(false, MsgHandleErrInternal::from_chan_no_close(ChannelError::Warn(msg), $channel_id.clone()))
@@ -1257,14 +1275,14 @@ macro_rules! convert_chan_err {
 			},
 			ChannelError::Close(msg) => {
 				log_error!($self.logger, "Closing channel {} due to close-required error: {}", log_bytes!($channel_id[..]), msg);
-				update_maps_on_chan_removal!($self, $short_to_id, $channel);
+				update_maps_on_chan_removal!($self, $short_to_id, $id_to_peer, $channel);
 				let shutdown_res = $channel.force_shutdown(true);
 				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, $channel.get_user_id(),
 					shutdown_res, $self.get_channel_update_for_broadcast(&$channel).ok()))
 			},
 			ChannelError::CloseDelayBroadcast(msg) => {
 				log_error!($self.logger, "Channel {} need to be shutdown but closing transactions not broadcast due to {}", log_bytes!($channel_id[..]), msg);
-				update_maps_on_chan_removal!($self, $short_to_id, $channel);
+				update_maps_on_chan_removal!($self, $short_to_id, $id_to_peer, $channel);
 				let shutdown_res = $channel.force_shutdown(false);
 				(true, MsgHandleErrInternal::from_finish_shutdown(msg, *$channel_id, $channel.get_user_id(),
 					shutdown_res, $self.get_channel_update_for_broadcast(&$channel).ok()))
@@ -1278,7 +1296,7 @@ macro_rules! break_chan_entry {
 		match $res {
 			Ok(res) => res,
 			Err(e) => {
-				let (drop, res) = convert_chan_err!($self, e, $channel_state.short_to_id, $entry.get_mut(), $entry.key());
+				let (drop, res) = convert_chan_err!($self, e, $channel_state.short_to_id, $channel_state.id_to_peer, $entry.get_mut(), $entry.key());
 				if drop {
 					$entry.remove_entry();
 				}
@@ -1293,7 +1311,7 @@ macro_rules! try_chan_entry {
 		match $res {
 			Ok(res) => res,
 			Err(e) => {
-				let (drop, res) = convert_chan_err!($self, e, $channel_state.short_to_id, $entry.get_mut(), $entry.key());
+				let (drop, res) = convert_chan_err!($self, e, $channel_state.short_to_id, $channel_state.id_to_peer, $entry.get_mut(), $entry.key());
 				if drop {
 					$entry.remove_entry();
 				}
@@ -1307,18 +1325,18 @@ macro_rules! remove_channel {
 	($self: expr, $channel_state: expr, $entry: expr) => {
 		{
 			let channel = $entry.remove_entry().1;
-			update_maps_on_chan_removal!($self, $channel_state.short_to_id, channel);
+			update_maps_on_chan_removal!($self, $channel_state.short_to_id, $channel_state.id_to_peer, channel);
 			channel
 		}
 	}
 }
 
 macro_rules! handle_monitor_err {
-	($self: ident, $err: expr, $short_to_id: expr, $chan: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $resend_funding_locked: expr, $failed_forwards: expr, $failed_fails: expr, $failed_finalized_fulfills: expr, $chan_id: expr) => {
+	($self: ident, $err: expr, $short_to_id: expr, $id_to_peer: expr, $chan: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $resend_funding_locked: expr, $failed_forwards: expr, $failed_fails: expr, $failed_finalized_fulfills: expr, $chan_id: expr) => {
 		match $err {
 			ChannelMonitorUpdateErr::PermanentFailure => {
 				log_error!($self.logger, "Closing channel {} due to monitor update ChannelMonitorUpdateErr::PermanentFailure", log_bytes!($chan_id[..]));
-				update_maps_on_chan_removal!($self, $short_to_id, $chan);
+				update_maps_on_chan_removal!($self, $short_to_id, $id_to_peer, $chan);
 				// TODO: $failed_fails is dropped here, which will cause other channels to hit the
 				// chain in a confused state! We need to move them into the ChannelMonitor which
 				// will be responsible for failing backwards once things confirm on-chain.
@@ -1357,44 +1375,44 @@ macro_rules! handle_monitor_err {
 			},
 		}
 	};
-	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $resend_funding_locked: expr, $failed_forwards: expr, $failed_fails: expr, $failed_finalized_fulfills: expr) => { {
-		let (res, drop) = handle_monitor_err!($self, $err, $channel_state.short_to_id, $entry.get_mut(), $action_type, $resend_raa, $resend_commitment, $resend_funding_locked, $failed_forwards, $failed_fails, $failed_finalized_fulfills, $entry.key());
+	($self: ident, $err: expr, $short_to_id: expr, $id_to_peer: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $resend_funding_locked: expr, $failed_forwards: expr, $failed_fails: expr, $failed_finalized_fulfills: expr) => { {
+		let (res, drop) = handle_monitor_err!($self, $err, $short_to_id, $id_to_peer, $entry.get_mut(), $action_type, $resend_raa, $resend_commitment, $resend_funding_locked, $failed_forwards, $failed_fails, $failed_finalized_fulfills, $entry.key());
 		if drop {
 			$entry.remove_entry();
 		}
 		res
 	} };
-	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $chan_id: expr, COMMITMENT_UPDATE_ONLY) => { {
+	($self: ident, $err: expr, $short_to_id: expr, $id_to_peer: expr, $entry: expr, $action_type: path, $chan_id: expr, COMMITMENT_UPDATE_ONLY) => { {
 		debug_assert!($action_type == RAACommitmentOrder::CommitmentFirst);
-		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, false, true, false, Vec::new(), Vec::new(), Vec::new(), $chan_id)
+		handle_monitor_err!($self, $err, $short_to_id, $id_to_peer, $entry, $action_type, false, true, false, Vec::new(), Vec::new(), Vec::new(), $chan_id)
 	} };
-	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $chan_id: expr, NO_UPDATE) => {
-		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, false, false, false, Vec::new(), Vec::new(), Vec::new(), $chan_id)
+	($self: ident, $err: expr, $short_to_id: expr, $id_to_peer: expr, $entry: expr, $action_type: path, $chan_id: expr, NO_UPDATE) => {
+		handle_monitor_err!($self, $err, $short_to_id, $id_to_peer, $entry, $action_type, false, false, false, Vec::new(), Vec::new(), Vec::new(), $chan_id)
 	};
-	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_funding_locked: expr, OPTIONALLY_RESEND_FUNDING_LOCKED) => {
-		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, false, false, $resend_funding_locked, Vec::new(), Vec::new(), Vec::new())
+	($self: ident, $err: expr, $short_to_id: expr, $id_to_peer: expr, $entry: expr, $action_type: path, $resend_funding_locked: expr, OPTIONALLY_RESEND_FUNDING_LOCKED) => {
+		handle_monitor_err!($self, $err, $short_to_id, $id_to_peer, $entry, $action_type, false, false, $resend_funding_locked, Vec::new(), Vec::new(), Vec::new())
 	};
-	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
-		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment, false, Vec::new(), Vec::new(), Vec::new())
+	($self: ident, $err: expr, $short_to_id: expr, $id_to_peer: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
+		handle_monitor_err!($self, $err, $short_to_id, $id_to_peer, $entry, $action_type, $resend_raa, $resend_commitment, false, Vec::new(), Vec::new(), Vec::new())
 	};
-	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $failed_forwards: expr, $failed_fails: expr) => {
-		handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment, false, $failed_forwards, $failed_fails, Vec::new())
+	($self: ident, $err: expr, $short_to_id: expr, $id_to_peer: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $failed_forwards: expr, $failed_fails: expr) => {
+		handle_monitor_err!($self, $err, $short_to_id, $id_to_peer, $entry, $action_type, $resend_raa, $resend_commitment, false, $failed_forwards, $failed_fails, Vec::new())
 	};
 }
 
 macro_rules! return_monitor_err {
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
-		return handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment);
+		return handle_monitor_err!($self, $err, $channel_state.short_to_id, $channel_state.id_to_peer, $entry, $action_type, $resend_raa, $resend_commitment);
 	};
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr, $failed_forwards: expr, $failed_fails: expr) => {
-		return handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment, $failed_forwards, $failed_fails);
+		return handle_monitor_err!($self, $err, $channel_state.short_to_id, $channel_state.id_to_peer, $entry, $action_type, $resend_raa, $resend_commitment, $failed_forwards, $failed_fails);
 	}
 }
 
 // Does not break in case of TemporaryFailure!
 macro_rules! maybe_break_monitor_err {
 	($self: ident, $err: expr, $channel_state: expr, $entry: expr, $action_type: path, $resend_raa: expr, $resend_commitment: expr) => {
-		match (handle_monitor_err!($self, $err, $channel_state, $entry, $action_type, $resend_raa, $resend_commitment), $err) {
+		match (handle_monitor_err!($self, $err, $channel_state.short_to_id, $channel_state.id_to_peer, $entry, $action_type, $resend_raa, $resend_commitment), $err) {
 			(e, ChannelMonitorUpdateErr::PermanentFailure) => {
 				break e;
 			},
@@ -1485,7 +1503,7 @@ macro_rules! handle_chan_restoration_locked {
 					if $raa.is_none() {
 						order = RAACommitmentOrder::CommitmentFirst;
 					}
-					break handle_monitor_err!($self, e, $channel_state, $channel_entry, order, $raa.is_some(), true);
+					break handle_monitor_err!($self, e, $channel_state.short_to_id, $channel_state.id_to_peer, $channel_entry, order, $raa.is_some(), true);
 				}
 			}
 
@@ -1581,6 +1599,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				short_to_id: HashMap::new(),
 				forward_htlcs: HashMap::new(),
 				claimable_htlcs: HashMap::new(),
+				id_to_peer: HashMap::new(),
 				pending_msg_events: Vec::new(),
 			}),
 			outbound_scid_aliases: Mutex::new(HashSet::new()),
@@ -1833,7 +1852,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if let Some(monitor_update) = monitor_update {
 						if let Err(e) = self.chain_monitor.update_channel(chan_entry.get().get_funding_txo().unwrap(), monitor_update) {
 							let (result, is_permanent) =
-								handle_monitor_err!(self, e, channel_state.short_to_id, chan_entry.get_mut(), RAACommitmentOrder::CommitmentFirst, chan_entry.key(), NO_UPDATE);
+								handle_monitor_err!(self, e, channel_state.short_to_id, channel_state.id_to_peer, chan_entry.get_mut(), RAACommitmentOrder::CommitmentFirst, chan_entry.key(), NO_UPDATE);
 							if is_permanent {
 								remove_channel!(self, channel_state, chan_entry);
 								break result;
@@ -2757,12 +2776,17 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			node_id: chan.get_counterparty_node_id(),
 			msg,
 		});
-		match channel_state.by_id.entry(chan.channel_id()) {
+		let chan_id = chan.channel_id();
+		match channel_state.by_id.entry(chan_id) {
 			hash_map::Entry::Occupied(_) => {
 				panic!("Generated duplicate funding txid?");
 			},
 			hash_map::Entry::Vacant(e) => {
+				let counterparty_node_id = chan.get_counterparty_node_id();
 				e.insert(chan);
+				if channel_state.id_to_peer.insert(chan_id, counterparty_node_id).is_some() {
+					panic!("id_to_peer map already contained funding txid, which shouldn't be possible");
+				}
 			}
 		}
 		Ok(())
@@ -3110,7 +3134,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								}
 							};
 							if let Err(e) = self.chain_monitor.update_channel(chan.get().get_funding_txo().unwrap(), monitor_update) {
-								handle_errors.push((chan.get().get_counterparty_node_id(), handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, true)));
+								handle_errors.push((chan.get().get_counterparty_node_id(), handle_monitor_err!(self, e, channel_state.short_to_id, channel_state.id_to_peer, chan, RAACommitmentOrder::CommitmentFirst, false, true)));
 								continue;
 							}
 							log_debug!(self.logger, "Forwarding HTLCs resulted in a commitment update with {} HTLCs added and {} HTLCs failed for channel {}",
@@ -3352,7 +3376,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		self.process_background_events();
 	}
 
-	fn update_channel_fee(&self, short_to_id: &mut HashMap<u64, (PublicKey, [u8; 32])>, pending_msg_events: &mut Vec<events::MessageSendEvent>, chan_id: &[u8; 32], chan: &mut Channel<Signer>, new_feerate: u32) -> (bool, NotifyOption, Result<(), MsgHandleErrInternal>) {
+	fn update_channel_fee(&self, short_to_id: &mut HashMap<u64, (PublicKey, [u8; 32])>, id_to_peer: &mut HashMap<[u8; 32], PublicKey>, pending_msg_events: &mut Vec<events::MessageSendEvent>, chan_id: &[u8; 32], chan: &mut Channel<Signer>, new_feerate: u32) -> (bool, NotifyOption, Result<(), MsgHandleErrInternal>) {
 		if !chan.is_outbound() { return (true, NotifyOption::SkipPersist, Ok(())); }
 		// If the feerate has decreased by less than half, don't bother
 		if new_feerate <= chan.get_feerate() && new_feerate * 2 > chan.get_feerate() {
@@ -3372,7 +3396,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let res = match chan.send_update_fee_and_commit(new_feerate, &self.logger) {
 			Ok(res) => Ok(res),
 			Err(e) => {
-				let (drop, res) = convert_chan_err!(self, e, short_to_id, chan, chan_id);
+				let (drop, res) = convert_chan_err!(self, e, short_to_id, id_to_peer, chan, chan_id);
 				if drop { retain_channel = false; }
 				Err(res)
 			}
@@ -3380,7 +3404,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let ret_err = match res {
 			Ok(Some((update_fee, commitment_signed, monitor_update))) => {
 				if let Err(e) = self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), monitor_update) {
-					let (res, drop) = handle_monitor_err!(self, e, short_to_id, chan, RAACommitmentOrder::CommitmentFirst, chan_id, COMMITMENT_UPDATE_ONLY);
+					let (res, drop) = handle_monitor_err!(self, e, short_to_id, id_to_peer, chan, RAACommitmentOrder::CommitmentFirst, chan_id, COMMITMENT_UPDATE_ONLY);
 					if drop { retain_channel = false; }
 					res
 				} else {
@@ -3421,8 +3445,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let channel_state = &mut *channel_state_lock;
 				let pending_msg_events = &mut channel_state.pending_msg_events;
 				let short_to_id = &mut channel_state.short_to_id;
+				let id_to_peer = &mut channel_state.id_to_peer;
 				channel_state.by_id.retain(|chan_id, chan| {
-					let (retain_channel, chan_needs_persist, err) = self.update_channel_fee(short_to_id, pending_msg_events, chan_id, chan, new_feerate);
+					let (retain_channel, chan_needs_persist, err) = self.update_channel_fee(short_to_id, id_to_peer, pending_msg_events, chan_id, chan, new_feerate);
 					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
 					if err.is_err() {
 						handle_errors.push(err);
@@ -3459,9 +3484,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				let channel_state = &mut *channel_state_lock;
 				let pending_msg_events = &mut channel_state.pending_msg_events;
 				let short_to_id = &mut channel_state.short_to_id;
+				let id_to_peer = &mut channel_state.id_to_peer;
 				channel_state.by_id.retain(|chan_id, chan| {
 					let counterparty_node_id = chan.get_counterparty_node_id();
-					let (retain_channel, chan_needs_persist, err) = self.update_channel_fee(short_to_id, pending_msg_events, chan_id, chan, new_feerate);
+					let (retain_channel, chan_needs_persist, err) = self.update_channel_fee(short_to_id, id_to_peer, pending_msg_events, chan_id, chan, new_feerate);
 					if chan_needs_persist == NotifyOption::DoPersist { should_persist = NotifyOption::DoPersist; }
 					if err.is_err() {
 						handle_errors.push((err, counterparty_node_id));
@@ -3469,7 +3495,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if !retain_channel { return false; }
 
 					if let Err(e) = chan.timer_check_closing_negotiation_progress() {
-						let (needs_close, err) = convert_chan_err!(self, e, short_to_id, chan, chan_id);
+						let (needs_close, err) = convert_chan_err!(self, e, short_to_id, id_to_peer, chan, chan_id);
 						handle_errors.push((Err(err), chan.get_counterparty_node_id()));
 						if needs_close { return false; }
 					}
@@ -3981,7 +4007,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 								payment_preimage, e);
 							return ClaimFundsFromHop::MonitorUpdateFail(
 								chan.get().get_counterparty_node_id(),
-								handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::CommitmentFirst, false, msgs.is_some()).unwrap_err(),
+								handle_monitor_err!(self, e, channel_state.short_to_id, channel_state.id_to_peer, chan, RAACommitmentOrder::CommitmentFirst, false, msgs.is_some()).unwrap_err(),
 								Some(htlc_value_msat)
 							);
 						}
@@ -4012,7 +4038,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							payment_preimage, e);
 					}
 					let counterparty_node_id = chan.get().get_counterparty_node_id();
-					let (drop, res) = convert_chan_err!(self, e, channel_state.short_to_id, chan.get_mut(), &chan_id);
+					let (drop, res) = convert_chan_err!(self, e, channel_state.short_to_id, channel_state.id_to_peer, chan.get_mut(), &chan_id);
 					if drop {
 						chan.remove_entry();
 					}
@@ -4386,9 +4412,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
-		match channel_state.by_id.entry(funding_msg.channel_id) {
+		let channel_id = funding_msg.channel_id;
+		match channel_state.by_id.entry(channel_id) {
 			hash_map::Entry::Occupied(_) => {
-				return Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id".to_owned(), funding_msg.channel_id))
+				return Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id".to_owned(), channel_id))
 			},
 			hash_map::Entry::Vacant(e) => {
 				channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
@@ -4399,6 +4426,9 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					send_funding_locked!(channel_state.short_to_id, channel_state.pending_msg_events, chan, msg);
 				}
 				e.insert(chan);
+				if channel_state.id_to_peer.insert(channel_id, *counterparty_node_id).is_some() {
+					panic!("id_to_peer map already contained funding txid, which shouldn't be possible");
+				}
 			}
 		}
 		Ok(())
@@ -4419,7 +4449,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						Err(e) => try_chan_entry!(self, Err(e), channel_state, chan),
 					};
 					if let Err(e) = self.chain_monitor.watch_channel(chan.get().get_funding_txo().unwrap(), monitor) {
-						let mut res = handle_monitor_err!(self, e, channel_state, chan, RAACommitmentOrder::RevokeAndACKFirst, funding_locked.is_some(), OPTIONALLY_RESEND_FUNDING_LOCKED);
+						let mut res = handle_monitor_err!(self, e, channel_state.short_to_id, channel_state.id_to_peer, chan, RAACommitmentOrder::RevokeAndACKFirst, funding_locked.is_some(), OPTIONALLY_RESEND_FUNDING_LOCKED);
 						if let Err(MsgHandleErrInternal { ref mut shutdown_finish, .. }) = res {
 							// We weren't able to watch the channel to begin with, so no updates should be made on
 							// it. Previously, full_stack_target found an (unreachable) panic when the
@@ -4504,7 +4534,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					if let Some(monitor_update) = monitor_update {
 						if let Err(e) = self.chain_monitor.update_channel(chan_entry.get().get_funding_txo().unwrap(), monitor_update) {
 							let (result, is_permanent) =
-								handle_monitor_err!(self, e, channel_state.short_to_id, chan_entry.get_mut(), RAACommitmentOrder::CommitmentFirst, chan_entry.key(), NO_UPDATE);
+								handle_monitor_err!(self, e, channel_state.short_to_id, channel_state.id_to_peer, chan_entry.get_mut(), RAACommitmentOrder::CommitmentFirst, chan_entry.key(), NO_UPDATE);
 							if is_permanent {
 								remove_channel!(self, channel_state, chan_entry);
 								break result;
@@ -4764,6 +4794,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let res = loop {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
+			let short_to_id = &mut channel_state.short_to_id;
+			let id_to_peer = &mut channel_state.id_to_peer;
 			match channel_state.by_id.entry(msg.channel_id) {
 				hash_map::Entry::Occupied(mut chan) => {
 					if chan.get().get_counterparty_node_id() != *counterparty_node_id {
@@ -4781,7 +4813,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							assert!(raa_updates.finalized_claimed_htlcs.is_empty());
 							break Err(MsgHandleErrInternal::ignore_no_close("Previous monitor update failure prevented responses to RAA".to_owned()));
 						} else {
-							if let Err(e) = handle_monitor_err!(self, e, channel_state, chan,
+							if let Err(e) = handle_monitor_err!(self, e, short_to_id, id_to_peer, chan,
 									RAACommitmentOrder::CommitmentFirst, false,
 									raa_updates.commitment_update.is_some(), false,
 									raa_updates.accepted_htlcs, raa_updates.failed_htlcs,
@@ -5037,6 +5069,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let channel_state = &mut *channel_state_lock;
 			let by_id = &mut channel_state.by_id;
 			let short_to_id = &mut channel_state.short_to_id;
+			let id_to_peer = &mut channel_state.id_to_peer;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
 
 			by_id.retain(|channel_id, chan| {
@@ -5048,7 +5081,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						if let Some((commitment_update, monitor_update)) = commitment_opt {
 							if let Err(e) = self.chain_monitor.update_channel(chan.get_funding_txo().unwrap(), monitor_update) {
 								has_monitor_update = true;
-								let (res, close_channel) = handle_monitor_err!(self, e, short_to_id, chan, RAACommitmentOrder::CommitmentFirst, channel_id, COMMITMENT_UPDATE_ONLY);
+								let (res, close_channel) = handle_monitor_err!(self, e, short_to_id, id_to_peer, chan, RAACommitmentOrder::CommitmentFirst, channel_id, COMMITMENT_UPDATE_ONLY);
 								handle_errors.push((chan.get_counterparty_node_id(), res));
 								if close_channel { return false; }
 							} else {
@@ -5061,7 +5094,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 						true
 					},
 					Err(e) => {
-						let (close_channel, res) = convert_chan_err!(self, e, short_to_id, chan, channel_id);
+						let (close_channel, res) = convert_chan_err!(self, e, short_to_id, id_to_peer, chan, channel_id);
 						handle_errors.push((chan.get_counterparty_node_id(), Err(res)));
 						// ChannelClosed event is generated by handle_error for us
 						!close_channel
@@ -5093,6 +5126,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let channel_state = &mut *channel_state_lock;
 			let by_id = &mut channel_state.by_id;
 			let short_to_id = &mut channel_state.short_to_id;
+			let id_to_peer = &mut channel_state.id_to_peer;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
 
 			by_id.retain(|channel_id, chan| {
@@ -5117,13 +5151,13 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 							log_info!(self.logger, "Broadcasting {}", log_tx!(tx));
 							self.tx_broadcaster.broadcast_transaction(&tx);
-							update_maps_on_chan_removal!(self, short_to_id, chan);
+							update_maps_on_chan_removal!(self, short_to_id, id_to_peer, chan);
 							false
 						} else { true }
 					},
 					Err(e) => {
 						has_update = true;
-						let (close_channel, res) = convert_chan_err!(self, e, short_to_id, chan, channel_id);
+						let (close_channel, res) = convert_chan_err!(self, e, short_to_id, id_to_peer, chan, channel_id);
 						handle_errors.push((chan.get_counterparty_node_id(), Err(res)));
 						!close_channel
 					}
@@ -5597,6 +5631,7 @@ where
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
 			let short_to_id = &mut channel_state.short_to_id;
+			let id_to_peer = &mut channel_state.id_to_peer;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
 			channel_state.by_id.retain(|_, channel| {
 				let res = f(channel);
@@ -5645,14 +5680,14 @@ where
 							// using the real SCID at relay-time (i.e. enforce option_scid_alias
 							// then), and if the funding tx is ever un-confirmed we force-close the
 							// channel, ensuring short_to_id is always consistent.
-							let scid_insert = short_to_id.insert(real_scid, channel.channel_id());
-							assert!(scid_insert.is_none() || scid_insert.unwrap() == channel.channel_id(),
+							let scid_insert = short_to_id.insert(real_scid, (channel.get_counterparty_node_id(), channel.channel_id()));
+							assert!(scid_insert.is_none() || scid_insert.unwrap() == (channel.get_counterparty_node_id(), channel.channel_id()),
 								"SCIDs should never collide - ensure you weren't behind by a full {} blocks when creating channels",
 								fake_scid::MAX_SCID_BLOCKS_FROM_NOW);
 						}
 					}
 				} else if let Err(reason) = res {
-					update_maps_on_chan_removal!(self, short_to_id, channel);
+					update_maps_on_chan_removal!(self, short_to_id, id_to_peer, channel);
 					// It looks like our counterparty went on-chain or funding transaction was
 					// reorged out of the main chain. Close the channel.
 					failed_channels.push(channel.force_shutdown(true));
@@ -5844,13 +5879,14 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 			let channel_state = &mut *channel_state_lock;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
 			let short_to_id = &mut channel_state.short_to_id;
+			let id_to_peer = &mut channel_state.id_to_peer;
 			log_debug!(self.logger, "Marking channels with {} disconnected and generating channel_updates. We believe we {} make future connections to this peer.",
 				log_pubkey!(counterparty_node_id), if no_connection_possible { "cannot" } else { "can" });
 			channel_state.by_id.retain(|_, chan| {
 				if chan.get_counterparty_node_id() == *counterparty_node_id {
 					chan.remove_uncommitted_htlcs_and_mark_paused(&self.logger);
 					if chan.is_shutdown() {
-						update_maps_on_chan_removal!(self, short_to_id, chan);
+						update_maps_on_chan_removal!(self, short_to_id, id_to_peer, chan);
 						self.issue_channel_close_events(chan, ClosureReason::DisconnectedPeer);
 						return false;
 					} else {
@@ -6649,6 +6685,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		let channel_count: u64 = Readable::read(reader)?;
 		let mut funding_txo_set = HashSet::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut by_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
+		let mut id_to_peer = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut short_to_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut channel_closures = Vec::new();
 		for _ in 0..channel_count {
@@ -6690,6 +6727,9 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 					log_info!(args.logger, "Successfully loaded channel {}", log_bytes!(channel.channel_id()));
 					if let Some(short_channel_id) = channel.get_short_channel_id() {
 						short_to_id.insert(short_channel_id, (channel.get_counterparty_node_id(), channel.channel_id()));
+					}
+					if channel.is_funding_initiated() {
+						id_to_peer.insert(channel.channel_id(), channel.get_counterparty_node_id());
 					}
 					by_id.insert(channel.channel_id(), channel);
 				}
@@ -7010,6 +7050,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 				short_to_id,
 				forward_htlcs,
 				claimable_htlcs,
+				id_to_peer,
 				pending_msg_events: Vec::new(),
 			}),
 			inbound_payment_key: expanded_inbound_key,
