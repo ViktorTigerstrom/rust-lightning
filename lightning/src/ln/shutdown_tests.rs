@@ -381,7 +381,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 		// closing_signed so we do it ourselves
 		check_closed_broadcast!(nodes[1], false);
 		check_added_monitors!(nodes[1], 1);
-		check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: "Failed to find corresponding channel".to_string() });
+		check_closed_event!(nodes[1], 1, ClosureReason::CounterpartyForceClosed { peer_msg: format!("Got a message for a channel from the wrong node! No such channel for the passed counterparty_node_id {}", &nodes[1].node.get_our_node_id()) });
 	}
 
 	assert!(nodes[0].node.list_channels().is_empty());
@@ -762,8 +762,9 @@ fn do_test_closing_signed_reinit_timeout(timeout_step: TimeoutStep) {
 		// nodes[1] should happily accept and respond to.
 		node_0_closing_signed.fee_range.as_mut().unwrap().max_fee_satoshis *= 10;
 		{
-			let mut lock;
-			get_channel_ref!(nodes[0], lock, chan_id).closing_fee_limits.as_mut().unwrap().1 *= 10;
+			let per_peer_lock = nodes[0].node.per_peer_state.write().unwrap();
+			let mut peer_state_lock = per_peer_lock.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+			get_channel_ref!(nodes[0], peer_state_lock, chan_id).closing_fee_limits.as_mut().unwrap().1 *= 10;
 		}
 		nodes[1].node.handle_closing_signed(&nodes[0].node.get_our_node_id(), &node_0_closing_signed);
 		let node_1_closing_signed = get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, nodes[0].node.get_our_node_id());
