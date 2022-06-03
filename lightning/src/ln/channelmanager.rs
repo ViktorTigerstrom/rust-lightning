@@ -737,6 +737,24 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	/// active channel list on load.
 	outbound_scid_aliases: Mutex<HashSet<u64>>,
 
+	/// `channel_id` -> `counterparty_node_id`.
+	///
+	/// Only `channel_id`s are allowed as keys in this map, and not `temporary_channel_id`s. As
+	/// multiple channels with the same `temporary_channel_id` to different peers can exist,
+	/// allowing `temporary_channel_id`s in this map would cause collisions for such channels.
+	///
+	/// Note that this map should only be used for `MonitorEvent` handling, to be able to access
+	/// the corresponding channel for the event, as we only have access to the `channel_id` during
+	/// the handling of the events.
+	///
+	/// TODO:
+	/// The `counterparty_node_id` can't be passed with `MonitorEvent`s currently, as adding it to
+	/// the `ChannelMonitor`s would break backwards compatability. If `counterparty_node_id`s are
+	/// added to `ChannelMonitor`s in the future, this map should be removed, as only the
+	/// `ChannelManager::per_peer_state` is required to access the channel if the
+	/// `counterparty_node_id` is passed with `MonitorEvent`s.
+	id_to_peer: Mutex<HashMap<[u8; 32], PublicKey>>,
+
 	our_network_key: SecretKey,
 	our_network_pubkey: PublicKey,
 
@@ -1242,6 +1260,7 @@ macro_rules! update_maps_on_chan_removal {
 			let alias_removed = $self.outbound_scid_aliases.lock().unwrap().remove(&$channel.outbound_scid_alias());
 			debug_assert!(alias_removed);
 		}
+		$self.id_to_peer.lock().unwrap().remove(&$channel.channel_id());
 		$short_to_id.remove(&$channel.outbound_scid_alias());
 	}
 }
@@ -1587,6 +1606,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			outbound_scid_aliases: Mutex::new(HashSet::new()),
 			pending_inbound_payments: Mutex::new(HashMap::new()),
 			pending_outbound_payments: Mutex::new(HashMap::new()),
+			id_to_peer: Mutex::new(HashMap::new()),
 
 			our_network_key: keys_manager.get_node_secret(Recipient::Node).unwrap(),
 			our_network_pubkey: PublicKey::from_secret_key(&secp_ctx, &keys_manager.get_node_secret(Recipient::Node).unwrap()),
@@ -2760,12 +2780,18 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			node_id: chan.get_counterparty_node_id(),
 			msg,
 		});
-		match channel_state.by_id.entry(chan.channel_id()) {
+		let chan_id = chan.channel_id();
+		match channel_state.by_id.entry(chan_id) {
 			hash_map::Entry::Occupied(_) => {
 				panic!("Generated duplicate funding txid?");
 			},
 			hash_map::Entry::Vacant(e) => {
+				let counterparty_node_id = chan.get_counterparty_node_id();
 				e.insert(chan);
+				let mut id_to_peer = self.id_to_peer.lock().unwrap();
+				if id_to_peer.insert(chan_id, counterparty_node_id).is_some() {
+					panic!("id_to_peer map already contained funding txid, which shouldn't be possible");
+				}
 			}
 		}
 		Ok(())
@@ -4412,9 +4438,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		}
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
-		match channel_state.by_id.entry(funding_msg.channel_id) {
+		let channel_id = funding_msg.channel_id;
+		match channel_state.by_id.entry(channel_id) {
 			hash_map::Entry::Occupied(_) => {
-				return Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id".to_owned(), funding_msg.channel_id))
+				return Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id".to_owned(), channel_id))
 			},
 			hash_map::Entry::Vacant(e) => {
 				channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
@@ -4425,6 +4452,10 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					send_channel_ready!(channel_state.short_to_id, channel_state.pending_msg_events, chan, msg);
 				}
 				e.insert(chan);
+				let mut id_to_peer = self.id_to_peer.lock().unwrap();
+				if id_to_peer.insert(channel_id, *counterparty_node_id).is_some() {
+					panic!("id_to_peer map already contained funding txid, which shouldn't be possible");
+				}
 			}
 		}
 		Ok(())
@@ -6679,6 +6710,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 		let channel_count: u64 = Readable::read(reader)?;
 		let mut funding_txo_set = HashSet::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut by_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
+		let mut id_to_peer = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut short_to_id = HashMap::with_capacity(cmp::min(channel_count as usize, 128));
 		let mut channel_closures = Vec::new();
 		for _ in 0..channel_count {
@@ -6720,6 +6752,9 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 					log_info!(args.logger, "Successfully loaded channel {}", log_bytes!(channel.channel_id()));
 					if let Some(short_channel_id) = channel.get_short_channel_id() {
 						short_to_id.insert(short_channel_id, (channel.get_counterparty_node_id(), channel.channel_id()));
+					}
+					if channel.is_funding_initiated() {
+						id_to_peer.insert(channel.channel_id(), channel.get_counterparty_node_id());
 					}
 					by_id.insert(channel.channel_id(), channel);
 				}
@@ -7047,6 +7082,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			pending_outbound_payments: Mutex::new(pending_outbound_payments.unwrap()),
 
 			outbound_scid_aliases: Mutex::new(outbound_scid_aliases),
+			id_to_peer: Mutex::new(id_to_peer),
 			fake_scid_rand_bytes: fake_scid_rand_bytes.unwrap(),
 
 			our_network_key,
