@@ -64,7 +64,7 @@ use prelude::*;
 use core::{cmp, mem};
 use core::cell::RefCell;
 use io::Read;
-use sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard};
+use sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, FairRwLock};
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 use core::ops::Deref;
@@ -786,9 +786,9 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	///
 	/// If also holding `channel_state` lock, must lock `channel_state` prior to `per_peer_state`.
 	#[cfg(not(any(test, feature = "_test_utils")))]
-	per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState<Signer>>>>,
+	per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<Signer>>>>,
 	#[cfg(any(test, feature = "_test_utils"))]
-	pub(super) per_peer_state: RwLock<HashMap<PublicKey, Mutex<PeerState<Signer>>>>,
+	pub(super) per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<Signer>>>>,
 
 	pending_events: Mutex<Vec<events::Event>>,
 	pending_background_events: Mutex<Vec<BackgroundEvent>>,
@@ -1624,7 +1624,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			last_node_announcement_serial: AtomicUsize::new(0),
 			highest_seen_timestamp: AtomicUsize::new(0),
 
-			per_peer_state: RwLock::new(HashMap::new()),
+			per_peer_state: FairRwLock::new(HashMap::new()),
 
 			pending_events: Mutex::new(Vec::new()),
 			pending_background_events: Mutex::new(Vec::new()),
@@ -1722,7 +1722,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		let temporary_channel_id = channel.channel_id();
 		let mut channel_state = self.channel_state.lock().unwrap();
-		let per_peer_state = self.per_peer_state.write().unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mutex) = per_peer_state.get(&their_network_key){
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -1860,7 +1860,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let result: Result<(), _> = loop {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
-			let per_peer_state = self.per_peer_state.write().unwrap();
+			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
@@ -1982,7 +1982,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let mut chan = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
-			let per_peer_state = self.per_peer_state.write().unwrap();
+			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(peer_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
@@ -2492,7 +2492,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 
 			let channel_state = &mut *channel_lock;
-			let per_peer_state = self.per_peer_state.write().unwrap();
+			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
@@ -2802,7 +2802,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	) -> Result<(), APIError> {
 		let (chan, msg) = {
 			let (res, chan) = {
-				let per_peer_state = self.per_peer_state.write().unwrap();
+				let per_peer_state = self.per_peer_state.read().unwrap();
 				if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 					let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 					let peer_state = &mut *peer_state_lock;
@@ -2838,7 +2838,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			node_id: chan.get_counterparty_node_id(),
 			msg,
 		});
-		let per_peer_state = self.per_peer_state.write().unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		let chan_id = chan.channel_id();
 		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -3114,7 +3114,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		{
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
-			let per_peer_state = self.per_peer_state.write().unwrap();
+			let per_peer_state = self.per_peer_state.read().unwrap();
 
 			for (short_chan_id, mut pending_forwards) in channel_state.forward_htlcs.drain() {
 				if short_chan_id != 0 {
@@ -3829,7 +3829,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				HTLCSource::PreviousHopData(HTLCPreviousHopData { .. }) => {
 					let channel_state = self.channel_state.lock().unwrap();
 					let (failure_code, onion_failure_data) = {
-							let per_peer_state = self.per_peer_state.write().unwrap();
+							let per_peer_state = self.per_peer_state.read().unwrap();
 							if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 								let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 								let peer_state = &mut *peer_state_lock;
@@ -4185,7 +4185,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 		};
 
-		let per_peer_state = self.per_peer_state.write().unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -4392,7 +4392,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			if counterparty_node_id.is_none() {
 				return
 			}
-			let per_peer_state = self.per_peer_state.write().unwrap();
+			let per_peer_state = self.per_peer_state.read().unwrap();
 			let mut peer_state_lock;
 			let mut channel = {
 				if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id.unwrap()) {
@@ -4482,7 +4482,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
-		let per_peer_state = self.per_peer_state.write().unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -4545,7 +4545,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		};
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
-		let per_peer_state = self.per_peer_state.write().unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -4589,7 +4589,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let (value, output_script, user_id) = {
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
-			let per_peer_state = self.per_peer_state.write().unwrap();
+			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
@@ -4623,7 +4623,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let best_block = *self.best_block.read().unwrap();
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
-			let per_peer_state = self.per_peer_state.write().unwrap();
+			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
@@ -4707,7 +4707,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let best_block = *self.best_block.read().unwrap();
 			let mut channel_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_lock;
-			let per_peer_state = self.per_peer_state.write().unwrap();
+			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
@@ -4751,7 +4751,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	fn internal_channel_ready(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelReady) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
-		let per_peer_state = self.per_peer_state.write().unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -4797,7 +4797,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 
-			let per_peer_state = self.per_peer_state.write().unwrap();
+			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
@@ -4855,7 +4855,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let (tx, chan_option) = {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
-			let per_peer_state = self.per_peer_state.write().unwrap();
+			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
@@ -4915,7 +4915,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let (pending_forward_info, mut channel_state_lock) = self.decode_update_add_htlc_onion(msg);
 		let channel_state = &mut *channel_state_lock;
 
-		let per_peer_state = self.per_peer_state.write().unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -4961,7 +4961,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let (htlc_source, forwarded_htlc_value) = {
 			let channel_state = &mut *channel_lock;
-			let per_peer_state = self.per_peer_state.write().unwrap();
+			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
@@ -4985,7 +4985,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	fn internal_update_fail_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_lock;
-		let per_peer_state = self.per_peer_state.write().unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -5007,7 +5007,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	fn internal_update_fail_malformed_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_lock;
-		let per_peer_state = self.per_peer_state.write().unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -5033,7 +5033,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	fn internal_commitment_signed(&self, counterparty_node_id: &PublicKey, msg: &msgs::CommitmentSigned) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
-		let per_peer_state = self.per_peer_state.write().unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -5125,7 +5125,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let res = loop {
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
-			let per_peer_state = self.per_peer_state.write().unwrap();
+			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
@@ -5192,7 +5192,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	fn internal_update_fee(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_lock;
-		let per_peer_state = self.per_peer_state.write().unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -5215,7 +5215,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let mut channel_state_lock = self.channel_state.lock().unwrap();
 		let channel_state = &mut *channel_state_lock;
 
-		let per_peer_state = self.per_peer_state.write().unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -5255,7 +5255,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 				return Ok(NotifyOption::SkipPersist)
 			}
 		};
-		let per_peer_state = self.per_peer_state.write().unwrap();
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mutex) = per_peer_state.get(chan_counterparty_node_id) {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 			let peer_state = &mut *peer_state_lock;
@@ -5290,7 +5290,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let mut channel_state_lock = self.channel_state.lock().unwrap();
 			let channel_state = &mut *channel_state_lock;
 
-			let per_peer_state = self.per_peer_state.write().unwrap();
+			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
@@ -5373,7 +5373,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 							id_to_peer.get(&funding_outpoint.to_channel_id()).cloned()
 						};
 						if let Some(counterparty_node_id) = counterparty_node_id_opt {
-							let per_peer_state = self.per_peer_state.write().unwrap();
+							let per_peer_state = self.per_peer_state.read().unwrap();
 							let pending_msg_events = &mut channel_state.pending_msg_events;
 							if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 								let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -6385,7 +6385,7 @@ impl<Signer: Sign, M: Deref , T: Deref , K: Deref , F: Deref , L: Deref >
 			{
 				// First check if we can advance the channel type and try again.
 				let mut channel_state = self.channel_state.lock().unwrap();
-				let per_peer_state = self.per_peer_state.write().unwrap();
+				let per_peer_state = self.per_peer_state.read().unwrap();
 				if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 					let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 					let peer_state = &mut *peer_state_lock;
@@ -6839,7 +6839,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> Writeable f
 		let channel_state = self.channel_state.lock().unwrap();
 		let mut htlc_purposes: Vec<&events::PaymentPurpose> = Vec::new();
 		{
-			let per_peer_state = self.per_peer_state.write().unwrap();
+			let per_peer_state = self.per_peer_state.read().unwrap();
 			let mut unfunded_channels = 0;
 			let mut number_of_channels = 0;
 			for (_, peer_state_mutex) in per_peer_state.iter() {
@@ -7502,7 +7502,7 @@ impl<'a, Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 			last_node_announcement_serial: AtomicUsize::new(last_node_announcement_serial as usize),
 			highest_seen_timestamp: AtomicUsize::new(highest_seen_timestamp as usize),
 
-			per_peer_state: RwLock::new(per_peer_state),
+			per_peer_state: FairRwLock::new(per_peer_state),
 
 			pending_events: Mutex::new(pending_events_read),
 			pending_background_events: Mutex::new(pending_background_events_read),
