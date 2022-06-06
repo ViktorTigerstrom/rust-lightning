@@ -7622,6 +7622,66 @@ mod tests {
 		// Check that using the original payment hash succeeds.
 		assert!(inbound_payment::verify(payment_hash, &payment_data, nodes[0].node.highest_seen_timestamp.load(Ordering::Acquire) as u64, &nodes[0].node.inbound_payment_key, &nodes[0].logger).is_ok());
 	}
+
+
+	#[test]
+	fn test_id_to_peer_coverage() {
+		// Test that the `ChannelManager:id_to_peer` contains channels which have been assigned
+		// an `channel_id` (i.e. have had the funding tx created), and that they are removed once
+		// the channel is successfully closed.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 1_000_000, 500_000_000, 42, None).unwrap();
+		let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_open_channel(&nodes[0].node.get_our_node_id(), InitFeatures::known(), &open_channel);
+		let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_accept_channel(&nodes[1].node.get_our_node_id(), InitFeatures::known(), &accept_channel);
+
+		let (temporary_channel_id, tx, _funding_output) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
+		let channel_id = &tx.txid().into_inner();
+		{
+			assert_eq!(nodes[0].node.id_to_peer.lock().unwrap().len(), 0);
+			assert_eq!(nodes[1].node.id_to_peer.lock().unwrap().len(), 0);
+		}
+
+		nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();
+		{
+			let nodes_0_lock = nodes[0].node.id_to_peer.lock().unwrap();
+			assert_eq!(nodes_0_lock.len(), 1);
+			assert!(nodes_0_lock.contains_key(channel_id));
+
+			assert_eq!(nodes[1].node.id_to_peer.lock().unwrap().len(), 0);
+		}
+
+		let funding_created_msg = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, nodes[1].node.get_our_node_id());
+
+		nodes[1].node.handle_funding_created(&nodes[0].node.get_our_node_id(), &funding_created_msg);
+		{
+			let nodes_0_lock = nodes[0].node.id_to_peer.lock().unwrap();
+			assert_eq!(nodes_0_lock.len(), 1);
+			assert!(nodes_0_lock.contains_key(channel_id));
+
+			let nodes_1_lock = nodes[1].node.id_to_peer.lock().unwrap();
+			assert_eq!(nodes_1_lock.len(), 1);
+			assert!(nodes_1_lock.contains_key(channel_id));
+		}
+		let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_funding_signed(&nodes[1].node.get_our_node_id(), &funding_signed);
+
+		nodes[0].node.close_channel(channel_id, &nodes[1].node.get_our_node_id()).unwrap();
+		nodes[1].node.handle_shutdown(&nodes[0].node.get_our_node_id(), &InitFeatures::known(), &get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, nodes[1].node.get_our_node_id()));
+		let events = nodes[1].node.get_and_clear_pending_msg_events();
+		let nodes_1_shutdown = match events[0] {
+			MessageSendEvent::SendShutdown { ref node_id, ref msg } => {
+				assert_eq!(node_id, &nodes[0].node.get_our_node_id());
+				msg.clone()
+			},
+			_ => panic!("Unexpected event"),
+		};
+	}
 }
 
 #[cfg(all(any(test, feature = "_test_utils"), feature = "_bench_unstable"))]
