@@ -750,11 +750,12 @@ pub struct ChannelManager<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, 
 	/// the handling of the events.
 	///
 	/// TODO:
-	/// The `counterparty_node_id` can't be passed with `MonitorEvent`s currently, as adding it to
-	/// the `ChannelMonitor`s would break backwards compatability. If `counterparty_node_id`s are
-	/// added to `ChannelMonitor`s in the future, this map should be removed, as only the
-	/// `ChannelManager::per_peer_state` is required to access the channel if the
-	/// `counterparty_node_id` is passed with `MonitorEvent`s.
+	/// The `counterparty_node_id` isn't passed with `MonitorEvent`s currently. To pass it, we need
+	/// to add the `counterparty_node_id` to `ChannelMonitor`s. However, adding it as a required
+	/// field in `ChannelMonitor`s would break backwards compatability.
+	/// We should add `counterparty_node_id`s to `MonitorEvent`s, and eventually rely on it in the
+	/// future. That would make this map redundant, as only the `ChannelManager::per_peer_state` is
+	/// required to access the channel with the `counterparty_node_id`.
 	id_to_peer: Mutex<HashMap<[u8; 32], PublicKey>>,
 
 	our_network_key: SecretKey,
