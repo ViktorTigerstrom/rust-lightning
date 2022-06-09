@@ -406,9 +406,11 @@ pub(super) enum RAACommitmentOrder {
 // Note this is only exposed in cfg(test):
 pub(super) struct ChannelHolder<Signer: Sign> {
 	pub(super) by_id: HashMap<[u8; 32], Channel<Signer>>,
-	/// SCIDs (and outbound SCID aliases) to the real channel id. Outbound SCID aliases are added
-	/// here once the channel is available for normal use, with SCIDs being added once the funding
-	/// transaction is confirmed at the channel's required confirmation depth.
+	/// SCIDs (and outbound SCID aliases) -> `counterparty_node_id`s and `channel_id`s.
+	///
+	/// Outbound SCID aliases are added here once the channel is available for normal use, with
+	/// SCIDs being added once the funding transaction is confirmed at the channel's required
+	/// confirmation depth.
 	pub(super) short_to_id: HashMap<u64, (PublicKey, [u8; 32])>,
 	/// SCID/SCID Alias -> forward infos. Key of 0 means payments received.
 	///
