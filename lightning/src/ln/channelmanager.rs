@@ -1710,7 +1710,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		let mut channel_state = self.channel_state.lock().unwrap();
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		match per_peer_state.get(&their_network_key) {
-			None => return Err(APIError::ChannelUnavailable { err: format!("Not connected to node: {}", their_network_key) }),
+			None => return Err(APIError::APIMisuseError { err: format!("Can't find a peer with a node_id matching the passed counterparty_node_id {}", their_network_key) }),
 			Some(peer_state) => {
 				let mut peer_state = peer_state.lock().unwrap();
 				let channel = {
