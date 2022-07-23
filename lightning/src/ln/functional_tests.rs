@@ -3109,8 +3109,10 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	let value = if use_dust {
 		// The dust limit applied to HTLC outputs considers the fee of the HTLC transaction as
 		// well, so HTLCs at exactly the dust limit will not be included in commitment txn.
-		nodes[2].node.per_peer_state.read().unwrap().get(&nodes[1].node.get_our_node_id())
-			.unwrap().lock().unwrap().channel_by_id.get(&chan_2.2).unwrap().holder_dust_limit_satoshis * 1000
+		let mut node_2_per_peer_lock;
+		let mut node_2_peer_state_lock;
+		let channel_2 = get_channel_ref!(nodes[2], nodes[1], node_2_per_peer_lock, node_2_peer_state_lock, chan_2.2);
+		channel_2.holder_dust_limit_satoshis * 1000
 	} else { 3000000 };
 
 	let (_, first_payment_hash, _) = route_payment(&nodes[0], &[&nodes[1], &nodes[2]], value);
@@ -5515,8 +5517,12 @@ fn do_test_fail_backwards_unrevoked_remote_announce(deliver_last_raa: bool, anno
 	send_payment(&nodes[1], &[&nodes[2], &nodes[3], &nodes[5]], 500000);
 	assert_eq!(get_local_commitment_txn!(nodes[3], chan.2)[0].output.len(), 2);
 
-	let ds_dust_limit = nodes[3].node.per_peer_state.read().unwrap().get(&nodes[2].node.get_our_node_id())
-		.unwrap().lock().unwrap().channel_by_id.get(&chan.2).unwrap().holder_dust_limit_satoshis;
+	let ds_dust_limit = {
+		let mut node_3_per_peer_lock;
+		let mut node_3_peer_state_lock;
+		let channel = get_channel_ref!(nodes[3], nodes[2], node_3_per_peer_lock, node_3_peer_state_lock, chan.2);
+		channel.holder_dust_limit_satoshis
+	};
 	// 0th HTLC:
 	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[2], &nodes[3], &nodes[4]], ds_dust_limit*1000); // not added < dust limit + HTLC tx fee
 	// 1st HTLC:
@@ -6595,8 +6601,12 @@ fn test_update_add_htlc_bolt2_sender_exceed_max_htlc_num_and_htlc_id_increment()
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1000000, 0, InitFeatures::known(), InitFeatures::known());
-	let max_accepted_htlcs = nodes[1].node.per_peer_state.read().unwrap().get(&nodes[0].node.get_our_node_id())
-		.unwrap().lock().unwrap().channel_by_id.get(&chan.2).unwrap().counterparty_max_accepted_htlcs as u64;
+	let max_accepted_htlcs = {
+		let mut node_1_per_peer_lock;
+		let mut node_1_peer_state_lock;
+		let channel = get_channel_ref!(nodes[1], nodes[0], node_1_per_peer_lock, node_1_peer_state_lock, chan.2);
+		channel.counterparty_max_accepted_htlcs as u64
+	};
 
 	for i in 0..max_accepted_htlcs {
 		let (route, our_payment_hash, _, our_payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], 100000);
@@ -7166,12 +7176,16 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 	let chan =create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
-	let bs_dust_limit = nodes[1].node.per_peer_state.read().unwrap().get(&nodes[0].node.get_our_node_id())
-		.unwrap().lock().unwrap().channel_by_id.get(&chan.2).unwrap().holder_dust_limit_satoshis;
+	let bs_dust_limit = {
+		let mut node_1_per_peer_lock;
+		let mut node_1_peer_state_lock;
+		let channel = get_channel_ref!(nodes[1], nodes[0], node_1_per_peer_lock, node_1_peer_state_lock, chan.2);
+		channel.holder_dust_limit_satoshis * 1000
+	};
 
 	// We route 2 dust-HTLCs between A and B
-	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
-	let (_, payment_hash_2, _) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
+	let (_, payment_hash_1, _) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit);
+	let (_, payment_hash_2, _) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit);
 	route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	// Cache one local commitment tx as previous
@@ -7258,10 +7272,14 @@ fn do_test_sweep_outbound_htlc_failure_update(revoked: bool, local: bool) {
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 	let chan = create_announced_chan_between_nodes(&nodes, 0, 1, InitFeatures::known(), InitFeatures::known());
 
-	let bs_dust_limit = nodes[1].node.per_peer_state.read().unwrap().get(&nodes[0].node.get_our_node_id())
-		.unwrap().lock().unwrap().channel_by_id.get(&chan.2).unwrap().holder_dust_limit_satoshis;
+	let bs_dust_limit = {
+		let mut node_1_per_peer_lock;
+		let mut node_1_peer_state_lock;
+		let channel = get_channel_ref!(nodes[1], nodes[0], node_1_per_peer_lock, node_1_peer_state_lock, chan.2);
+		channel.holder_dust_limit_satoshis * 1000
+	};
 
-	let (_payment_preimage_1, dust_hash, _payment_secret_1) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit*1000);
+	let (_payment_preimage_1, dust_hash, _payment_secret_1) = route_payment(&nodes[0], &[&nodes[1]], bs_dust_limit);
 	let (_payment_preimage_2, non_dust_hash, _payment_secret_2) = route_payment(&nodes[0], &[&nodes[1]], 1000000);
 
 	let as_commitment_tx = get_local_commitment_txn!(nodes[0], chan.2);
@@ -8807,14 +8825,16 @@ fn test_update_err_monitor_lockdown() {
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
-	if let Some(ref mut channel) = nodes[0].node.per_peer_state.write().unwrap().get_mut(&nodes[1].node.get_our_node_id())
-			.unwrap().lock().unwrap().channel_by_id.get_mut(&chan_1.2)
 	{
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let mut channel = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1.2);
+
 		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 			if let Err(_) =  watchtower.chain_monitor.update_channel(outpoint, update.clone()) {} else { assert!(false); }
 			if let Ok(_) = nodes[0].chain_monitor.update_channel(outpoint, update) {} else { assert!(false); }
 		} else { assert!(false); }
-	} else { assert!(false); };
+	}
 	// Our local monitor is in-sync and hasn't processed yet timeout
 	check_added_monitors!(nodes[0], 1);
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -8900,16 +8920,18 @@ fn test_concurrent_monitor_claim() {
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert_eq!(updates.update_add_htlcs.len(), 1);
 	nodes[0].node.handle_update_add_htlc(&nodes[1].node.get_our_node_id(), &updates.update_add_htlcs[0]);
-	if let Some(ref mut channel) = nodes[0].node.per_peer_state.write().unwrap().get_mut(&nodes[1].node.get_our_node_id())
-			.unwrap().lock().unwrap().channel_by_id.get_mut(&chan_1.2)
 	{
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let mut channel = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan_1.2);
+
 		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 			// Watchtower Alice should already have seen the block and reject the update
 			if let Err(_) =  watchtower_alice.chain_monitor.update_channel(outpoint, update.clone()) {} else { assert!(false); }
 			if let Ok(_) = watchtower_bob.chain_monitor.update_channel(outpoint, update.clone()) {} else { assert!(false); }
 			if let Ok(_) = nodes[0].chain_monitor.update_channel(outpoint, update) {} else { assert!(false); }
 		} else { assert!(false); }
-	} else { assert!(false); };
+	}
 	// Our local monitor is in-sync and hasn't processed yet timeout
 	check_added_monitors!(nodes[0], 1);
 
@@ -10313,11 +10335,10 @@ fn do_test_max_dust_htlc_exposure(dust_outbound_balance: bool, exposure_breach_e
 	let (temporary_channel_id, tx, _) = create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 1_000_000, 42);
 
 	if on_holder_tx {
-		if let Some(mut chan) = nodes[0].node.per_peer_state.write().unwrap().get_mut(&nodes[1].node.get_our_node_id())
-				.unwrap().lock().unwrap().channel_by_id.get_mut(&temporary_channel_id)
-		{
-			chan.holder_dust_limit_satoshis = 546;
-		}
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let mut channel = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, temporary_channel_id);
+		channel.holder_dust_limit_satoshis = 546;
 	}
 
 	nodes[0].node.funding_transaction_generated(&temporary_channel_id, &nodes[1].node.get_our_node_id(), tx.clone()).unwrap();

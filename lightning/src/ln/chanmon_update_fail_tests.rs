@@ -130,9 +130,11 @@ fn test_monitor_and_persister_update_fail() {
 	let updates = get_htlc_update_msgs!(nodes[1], nodes[0].node.get_our_node_id());
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(&nodes[1].node.get_our_node_id(), &updates.update_fulfill_htlcs[0]);
-	if let Some(ref mut channel) = nodes[0].node.per_peer_state.write().unwrap().get_mut(&nodes[1].node.get_our_node_id())
-			.unwrap().lock().unwrap().channel_by_id.get_mut(&chan.2)
+
 	{
+		let mut node_0_per_peer_lock;
+		let mut node_0_peer_state_lock;
+		let mut channel = get_channel_ref!(nodes[0], nodes[1], node_0_per_peer_lock, node_0_peer_state_lock, chan.2);
 		if let Ok((_, _, update)) = channel.commitment_signed(&updates.commitment_signed, &node_cfgs[0].logger) {
 			// Check that even though the persister is returning a TemporaryFailure,
 			// because the update is bogus, ultimately the error that's returned
@@ -141,7 +143,7 @@ fn test_monitor_and_persister_update_fail() {
 			logger.assert_log_regex("lightning::chain::chainmonitor".to_string(), regex::Regex::new("Failed to persist ChannelMonitor update for channel [0-9a-f]*: TemporaryFailure").unwrap(), 1);
 			if let Ok(_) = nodes[0].chain_monitor.update_channel(outpoint, update) {} else { assert!(false); }
 		} else { assert!(false); }
-	} else { assert!(false); };
+	}
 
 	check_added_monitors!(nodes[0], 1);
 	let events = nodes[0].node.get_and_clear_pending_events();

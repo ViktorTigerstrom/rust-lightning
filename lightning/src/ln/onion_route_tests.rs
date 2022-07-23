@@ -492,9 +492,12 @@ fn test_onion_failure() {
 	  Some(NetworkUpdate::ChannelFailure{short_channel_id, is_permanent:true}), Some(short_channel_id));
 
 	let short_channel_id = channels[1].0.contents.short_channel_id;
-	let amt_to_forward = nodes[1].node.per_peer_state.read().unwrap().get(&nodes[2].node.get_our_node_id())
-		.unwrap().lock().unwrap().channel_by_id.get(&channels[1].2).unwrap()
-		.get_counterparty_htlc_minimum_msat() - 1;
+	let amt_to_forward = {
+		let mut node_1_per_peer_lock;
+		let mut node_1_peer_state_lock;
+		let channel_2 = get_channel_ref!(nodes[1], nodes[2], node_1_per_peer_lock, node_1_peer_state_lock, channels[1].2);
+		channel_2.get_counterparty_htlc_minimum_msat() - 1
+	};
 	let mut bogus_route = route.clone();
 	let route_len = bogus_route.paths[0].len();
 	bogus_route.paths[0][route_len-1].fee_msat = amt_to_forward;
