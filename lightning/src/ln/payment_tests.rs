@@ -533,8 +533,8 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	// and not the original fee. We also update node[1]'s relevant config as
 	// do_claim_payment_along_route expects us to never overpay.
 	{
-		let mut per_peer_state = nodes[1].node.per_peer_state.write().unwrap();
-		let mut peer_state = per_peer_state.get_mut(&nodes[2].node.get_our_node_id())
+		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
+		let mut peer_state = per_peer_state.get(&nodes[2].node.get_our_node_id())
 			.unwrap().lock().unwrap();
 		let mut channel = peer_state.channel_by_id.get_mut(&chan_id_2).unwrap();
 		let mut new_config = channel.config();

@@ -510,7 +510,7 @@ macro_rules! get_htlc_update_msgs {
 macro_rules! get_channel_ref {
 	($node: expr, $counterparty_node: expr, $per_peer_state_lock: ident, $peer_state_lock: ident, $channel_id: expr) => {
 		{
-			$per_peer_state_lock = $node.node.per_peer_state.write().unwrap();
+			$per_peer_state_lock = $node.node.per_peer_state.read().unwrap();
 			$peer_state_lock = $per_peer_state_lock.get(&$counterparty_node.node.get_our_node_id()).unwrap().lock().unwrap();
 			$peer_state_lock.channel_by_id.get_mut(&$channel_id).unwrap()
 		}

@@ -8103,8 +8103,8 @@ fn test_counterparty_raa_skip_no_crash() {
 	let per_commitment_secret;
 	let next_per_commitment_point;
 	{
-		let mut per_peer_state = nodes[0].node.per_peer_state.write().unwrap();
-		let mut guard = per_peer_state.get_mut(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+		let mut guard = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		let keys = guard.channel_by_id.get_mut(&channel_id).unwrap().get_signer();
 
 		const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
@@ -9310,8 +9310,8 @@ fn test_duplicate_chan_id() {
 	create_funding_transaction(&nodes[0], &nodes[1].node.get_our_node_id(), 100000, 42); // Get and check the FundingGenerationReady event
 
 	let funding_created = {
-		let mut per_peer_state = nodes[0].node.per_peer_state.write().unwrap();
-		let mut a_channel_lock = per_peer_state.get_mut(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
+		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+		let mut a_channel_lock = per_peer_state.get(&nodes[1].node.get_our_node_id()).unwrap().lock().unwrap();
 		// Once we call `get_outbound_funding_created` the channel has a duplicate channel_id as
 		// another channel in the ChannelManager - an invalid state. Thus, we'd panic later when we
 		// try to create another channel. Instead, we drop the channel entirely here (leaving the
