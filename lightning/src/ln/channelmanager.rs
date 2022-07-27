@@ -1767,7 +1767,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	fn list_channels_with_filter<Fn: FnMut(&(&[u8; 32], &Channel<Signer>)) -> bool + Copy>(&self, f: Fn) -> Vec<ChannelDetails> {
 		let mut res = Vec::new();
 		{
-			let channel_state = self.channel_state.lock().unwrap();
 			// Allocate our best estimate of the number of channels we have in the `res`
 			// Vec. Sadly the `channel_state.short_to_chan_info` map doesn't cover channels without
 			// a scid or a scid alias, and the `channel_state.id_to_peer` shouldn't be used outside
@@ -2000,8 +1999,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	fn force_close_channel_with_peer(&self, channel_id: &[u8; 32], peer_node_id: &PublicKey, peer_msg: Option<&String>, broadcast: bool)
 	-> Result<PublicKey, APIError> {
 		let mut chan = {
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_state_lock;
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(peer_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -2283,7 +2280,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 		};
 
-		let channel_state = self.channel_state.lock().unwrap();
 		if let &PendingHTLCStatus::Forward(PendingHTLCInfo { ref routing, ref amt_to_forward, ref outgoing_cltv_value, .. }) = &pending_forward_info {
 			// If short_channel_id is 0 here, we'll reject the HTLC as there cannot be a channel
 			// with a short_channel_id of 0. This is important as various things later assume
@@ -4663,8 +4659,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	fn internal_accept_channel(&self, counterparty_node_id: &PublicKey, their_features: InitFeatures, msg: &msgs::AcceptChannel) -> Result<(), MsgHandleErrInternal> {
 		let (value, output_script, user_id) = {
-			let mut channel_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_lock;
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -4697,8 +4691,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	fn internal_funding_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), MsgHandleErrInternal> {
 		let ((funding_msg, monitor, mut channel_ready), mut chan) = {
 			let best_block = *self.best_block.read().unwrap();
-			let mut channel_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_lock;
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -4989,8 +4981,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 		//but we should prevent it anyway.
 
 		let pending_forward_info = self.decode_update_add_htlc_onion(msg);
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
 
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
@@ -5037,7 +5027,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	fn internal_update_fulfill_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFulfillHTLC) -> Result<(), MsgHandleErrInternal> {
 		let mut channel_lock = self.channel_state.lock().unwrap();
 		let (htlc_source, forwarded_htlc_value) = {
-			let channel_state = &mut *channel_lock;
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -5060,8 +5049,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	fn internal_update_fail_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailHTLC) -> Result<(), MsgHandleErrInternal> {
-		let mut channel_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_lock;
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -5082,8 +5069,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	fn internal_update_fail_malformed_htlc(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFailMalformedHTLC) -> Result<(), MsgHandleErrInternal> {
-		let mut channel_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_lock;
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -5267,8 +5252,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	}
 
 	fn internal_update_fee(&self, counterparty_node_id: &PublicKey, msg: &msgs::UpdateFee) -> Result<(), MsgHandleErrInternal> {
-		let mut channel_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_lock;
 		let per_peer_state = self.per_peer_state.read().unwrap();
 		if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
@@ -5323,8 +5306,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 	/// Returns ShouldPersist if anything changed, otherwise either SkipPersist or an Err.
 	fn internal_channel_update(&self, counterparty_node_id: &PublicKey, msg: &msgs::ChannelUpdate) -> Result<NotifyOption, MsgHandleErrInternal> {
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
 		let (chan_counterparty_node_id, chan_id) = match self.short_to_chan_info.read().unwrap().get(&msg.contents.short_channel_id) {
 			Some((cp_id, chan_id)) => (cp_id.clone(), chan_id.clone()),
 			None => {
@@ -6042,7 +6023,6 @@ where
 	}
 
 	fn get_relevant_txids(&self) -> Vec<Txid> {
-		let channel_state = self.channel_state.lock().unwrap();
 		let mut res = Vec::with_capacity(self.short_to_chan_info.read().unwrap().len());
 		for (_, peer_state_mutex) in self.per_peer_state.read().unwrap().iter() {
 			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
