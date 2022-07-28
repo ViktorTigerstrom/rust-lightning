@@ -1764,12 +1764,11 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 	fn list_channels_with_filter<Fn: FnMut(&(&[u8; 32], &Channel<Signer>)) -> bool + Copy>(&self, f: Fn) -> Vec<ChannelDetails> {
 		let mut res = Vec::new();
 		{
-			// Allocate our best estimate of the number of channels we have in the `res`
-			// Vec. Sadly the `channel_state.short_to_chan_info` map doesn't cover channels without
-			// a scid or a scid alias, and the `channel_state.id_to_peer` shouldn't be used outside
-			// of the ChannelMonitor handling. Therefore reallocations may still occur, but is
-			// unlikely as the `channel_state.short_to_chan_info` map often contains 2 entries for
-			// the same channel.
+			// Allocate our best estimate of the number of channels we have in the `res` Vec.
+			// Sadly the `short_to_chan_info` map doesn't cover channels without a scid or a scid
+			// alias, and the `channel_state.id_to_peer` shouldn't be used outside of the
+			// ChannelMonitor handling. Therefore reallocations may still occur, but is unlikely
+			// as the `short_to_chan_info` map often contains 2 entries for the same channel.
 			res.reserve(self.short_to_chan_info.read().unwrap().len());
 
 			let per_peer_state = self.per_peer_state.read().unwrap();
