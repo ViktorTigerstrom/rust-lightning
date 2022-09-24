@@ -4006,7 +4006,8 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 
-		let removed_source = self.channel_state.lock().unwrap().claimable_htlcs.remove(&payment_hash);
+		let mut channel_state = self.channel_state.lock().unwrap();
+		let removed_source = channel_state.claimable_htlcs.remove(&payment_hash);
 		if let Some((payment_purpose, mut sources)) = removed_source {
 			assert!(!sources.is_empty());
 
@@ -4026,8 +4027,6 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			let mut valid_mpp = true;
 			let mut errs = Vec::new();
 			let mut claimed_any_htlcs = false;
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_state_lock;
 			for htlc in sources.iter() {
 				if let None = channel_state.short_to_chan_info.get(&htlc.prev_hop.short_channel_id) {
 					valid_mpp = false;
@@ -4064,7 +4063,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 			}
 			if valid_mpp {
 				for htlc in sources.drain(..) {
-					match self.claim_funds_from_hop(&mut channel_state_lock, htlc.prev_hop, payment_preimage) {
+					match self.claim_funds_from_hop(&mut channel_state, htlc.prev_hop, payment_preimage) {
 						ClaimFundsFromHop::MonitorUpdateFail(pk, err, _) => {
 							if let msgs::ErrorAction::IgnoreError = err.err.action {
 								// We got a temporary failure updating monitor, but will claim the
@@ -4084,7 +4083,7 @@ impl<Signer: Sign, M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelMana
 					}
 				}
 			}
-			mem::drop(channel_state_lock);
+			mem::drop(channel_state);
 			if !valid_mpp {
 				for htlc in sources.drain(..) {
 					let mut htlc_msat_height_data = byte_utils::be64_to_array(htlc.value).to_vec();
