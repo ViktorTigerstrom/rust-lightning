@@ -6614,15 +6614,13 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref >
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
 				peer_state.channel_by_id.retain(|_, chan| {
-					if chan.get_counterparty_node_id() == *counterparty_node_id {
-						chan.remove_uncommitted_htlcs_and_mark_paused(&self.logger);
-						if chan.is_shutdown() {
-							update_maps_on_chan_removal!(self, chan);
-							self.issue_channel_close_events(chan, ClosureReason::DisconnectedPeer);
-							return false;
-						} else {
-							no_channels_remain = false;
-						}
+					chan.remove_uncommitted_htlcs_and_mark_paused(&self.logger);
+					if chan.is_shutdown() {
+						update_maps_on_chan_removal!(self, chan);
+						self.issue_channel_close_events(chan, ClosureReason::DisconnectedPeer);
+						return false;
+					} else {
+						no_channels_remain = false;
 					}
 					true
 				});
@@ -6748,9 +6746,6 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref >
 					let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 					let peer_state = &mut *peer_state_lock;
 					if let Some(chan) = peer_state.channel_by_id.get_mut(&msg.channel_id) {
-						if chan.get_counterparty_node_id() != *counterparty_node_id {
-							return;
-						}
 						if let Ok(msg) = chan.maybe_handle_error_without_close(self.genesis_hash) {
 							channel_state.pending_msg_events.push(events::MessageSendEvent::SendOpenChannel {
 								node_id: *counterparty_node_id,
