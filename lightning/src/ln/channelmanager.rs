@@ -4869,9 +4869,11 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	}
 
 	fn internal_funding_created(&self, counterparty_node_id: &PublicKey, msg: &msgs::FundingCreated) -> Result<(), MsgHandleErrInternal> {
+		let mut channel_state_lock = self.channel_state.lock().unwrap();
+		let channel_state = &mut *channel_state_lock;
+		let per_peer_state = self.per_peer_state.read().unwrap();
 		let ((funding_msg, monitor, mut channel_ready), mut chan) = {
 			let best_block = *self.best_block.read().unwrap();
-			let per_peer_state = self.per_peer_state.read().unwrap();
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
 				let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 				let peer_state = &mut *peer_state_lock;
@@ -4913,39 +4915,38 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 				channel_ready = None; // Don't send the channel_ready now
 			},
 		}
-		let mut channel_state_lock = self.channel_state.lock().unwrap();
-		let channel_state = &mut *channel_state_lock;
-		let peer_state_lock = self.per_peer_state.read().unwrap();
-		if let Some(peer_state_mutex) = peer_state_lock.get(counterparty_node_id) {
-			let mut peer_state_lock = peer_state_mutex.lock().unwrap();
-			let peer_state = &mut *peer_state_lock;
-			match peer_state.channel_by_id.entry(funding_msg.channel_id) {
-				hash_map::Entry::Occupied(_) => {
-					return Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id".to_owned(), funding_msg.channel_id))
-				},
-				hash_map::Entry::Vacant(e) => {
-					let mut id_to_peer = self.id_to_peer.lock().unwrap();
-					match id_to_peer.entry(chan.channel_id()) {
-						hash_map::Entry::Occupied(_) => {
-							return Err(MsgHandleErrInternal::send_err_msg_no_close(
-								"The funding_created message had the same funding_txid as an existing channel - funding is not possible".to_owned(),
-								funding_msg.channel_id))
-						},
-						hash_map::Entry::Vacant(i_e) => {
-							i_e.insert(chan.get_counterparty_node_id());
-						}
+		// It's safe to unwrap as we've held the `per_peer_state` read lock since checking that the
+		// peer exists, despite the inner PeerState potentially having no channels after removing
+		// the channel above.
+		let peer_state_mutex = per_peer_state.get(counterparty_node_id).unwrap();
+		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
+		let peer_state = &mut *peer_state_lock;
+		match peer_state.channel_by_id.entry(funding_msg.channel_id) {
+			hash_map::Entry::Occupied(_) => {
+				return Err(MsgHandleErrInternal::send_err_msg_no_close("Already had channel with the new channel_id".to_owned(), funding_msg.channel_id))
+			},
+			hash_map::Entry::Vacant(e) => {
+				let mut id_to_peer = self.id_to_peer.lock().unwrap();
+				match id_to_peer.entry(chan.channel_id()) {
+					hash_map::Entry::Occupied(_) => {
+						return Err(MsgHandleErrInternal::send_err_msg_no_close(
+							"The funding_created message had the same funding_txid as an existing channel - funding is not possible".to_owned(),
+							funding_msg.channel_id))
+					},
+					hash_map::Entry::Vacant(i_e) => {
+						i_e.insert(chan.get_counterparty_node_id());
 					}
-					channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
-						node_id: counterparty_node_id.clone(),
-						msg: funding_msg,
-					});
-					if let Some(msg) = channel_ready {
-						send_channel_ready!(self, channel_state.pending_msg_events, chan, msg);
-					}
-					e.insert(chan);
 				}
+				channel_state.pending_msg_events.push(events::MessageSendEvent::SendFundingSigned {
+					node_id: counterparty_node_id.clone(),
+					msg: funding_msg,
+				});
+				if let Some(msg) = channel_ready {
+					send_channel_ready!(self, channel_state.pending_msg_events, chan, msg);
+				}
+				e.insert(chan);
 			}
-	} else { return Err(MsgHandleErrInternal::send_err_msg_no_close(format!("The peer with node_id {}, was dropped before the signed funding tx was sent to the peer", counterparty_node_id), funding_msg.channel_id)) }
+		}
 		Ok(())
 	}
 
