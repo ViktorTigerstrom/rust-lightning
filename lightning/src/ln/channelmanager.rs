@@ -455,11 +455,11 @@ pub(crate) enum MonitorUpdateCompletionAction {
 /// State we hold per-peer.
 pub(super) struct PeerState<Signer: Sign> {
 	/// `temporary_channel_id` or `channel_id` -> `channel`.
-    ///
-    /// Holds all channels where the peer is the counterparty. Once a channel has been assigned a
-    /// `channel_id`, the `temporary_channel_id` key in the map is updated and is replaced by the
-    /// `channel_id`.
-    pub(super) channel_by_id: HashMap<[u8; 32], Channel<Signer>>,
+	///
+	/// Holds all channels where the peer is the counterparty. Once a channel has been assigned a
+	/// `channel_id`, the `temporary_channel_id` key in the map is updated and is replaced by the
+	/// `channel_id`.
+	pub(super) channel_by_id: HashMap<[u8; 32], Channel<Signer>>,
 	/// The latest `InitFeatures` we heard from the peer.
 	latest_features: InitFeatures,
 }
