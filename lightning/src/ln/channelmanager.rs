@@ -890,6 +890,8 @@ pub struct ChannelManager<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref>
 	/// operate on the inner value freely. This opens up for parallel per-peer operation for
 	/// channels.
 	///
+	/// Note that the same thread must never acquire two inner `PeerState` locks at the same time.
+	///
 	/// See `ChannelManager` struct-level documentation for lock order requirements.
 	#[cfg(not(any(test, feature = "_test_utils")))]
 	per_peer_state: FairRwLock<HashMap<PublicKey, Mutex<PeerState<<K::Target as KeysInterface>::Signer>>>>,
