@@ -6665,11 +6665,10 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref >
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(&self.total_consistency_lock, &self.persistence_notifier);
 		let mut failed_channels = Vec::new();
 		let mut no_channels_remain = true;
+		let mut channel_state = self.channel_state.lock().unwrap();
+		let mut per_peer_state = self.per_peer_state.write().unwrap();
 		{
-			let mut channel_state_lock = self.channel_state.lock().unwrap();
-			let channel_state = &mut *channel_state_lock;
 			let pending_msg_events = &mut channel_state.pending_msg_events;
-			let per_peer_state = self.per_peer_state.read().unwrap();
 			log_debug!(self.logger, "Marking channels with {} disconnected and generating channel_updates. We believe we {} make future connections to this peer.",
 				log_pubkey!(counterparty_node_id), if no_connection_possible { "cannot" } else { "can" });
 			if let Some(peer_state_mutex) = per_peer_state.get(counterparty_node_id) {
@@ -6713,10 +6712,12 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref >
 					&events::MessageSendEvent::SendGossipTimestampFilter { .. } => false,
 				}
 			});
+			mem::drop(channel_state);
 		}
 		if no_channels_remain {
-			self.per_peer_state.write().unwrap().remove(counterparty_node_id);
+			per_peer_state.remove(counterparty_node_id);
 		}
+		mem::drop(per_peer_state);
 
 		for failure in failed_channels.drain(..) {
 			self.finish_force_close_channel(failure);
