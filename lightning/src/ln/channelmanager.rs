@@ -4003,7 +4003,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	/// Fails an HTLC backwards to the sender of it to us.
 	/// Note that we do not assume that channels corresponding to failed HTLCs are still available.
 	fn fail_htlc_backwards_internal(&self, source: &HTLCSource, payment_hash: &PaymentHash, onion_error: &HTLCFailReason, destination: HTLCDestination) {
-		#[cfg(debug_assertions)]
+		#[cfg(all(debug_assertions, feature = "std"))]
 		{
 			// Ensure that the `channel_state` and no peer state channel storage lock is not held
 			// when calling this function.
