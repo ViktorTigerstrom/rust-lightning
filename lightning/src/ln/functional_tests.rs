@@ -2768,16 +2768,16 @@ fn test_htlc_on_chain_success() {
 		added_monitors.clear();
 	}
 	assert_eq!(events.len(), 3);
-	match events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
-	match events[1] {
+
+	let (nodes_2_event, events) = remove_first_msg_event_to_node(nodes[2].node.get_our_node_id(), &events);
+	let (nodes_0_event, events) = remove_first_msg_event_to_node(nodes[0].node.get_our_node_id(), &events);
+
+	match nodes_2_event {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { .. }, node_id: _ } => {},
 		_ => panic!("Unexpected event"),
 	}
 
-	match events[2] {
+	match nodes_0_event {
 		MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, ref update_fulfill_htlcs, ref update_fail_malformed_htlcs, .. } } => {
 			assert!(update_add_htlcs.is_empty());
 			assert!(update_fail_htlcs.is_empty());
@@ -2787,6 +2787,13 @@ fn test_htlc_on_chain_success() {
 		},
 		_ => panic!("Unexpected event"),
 	};
+
+	// Ensure that the last remaining message event is the BroadcastChannelUpdate msg for chan_2
+	match events[0] {
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+
 	macro_rules! check_tx_local_broadcast {
 		($node: expr, $htlc_offered: expr, $commitment_tx: expr, $chan_tx: expr) => { {
 			let mut node_txn = $node.tx_broadcaster.txn_broadcasted.lock().unwrap();
@@ -3218,21 +3225,12 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 	nodes[1].node.process_pending_htlc_forwards();
 	check_added_monitors!(nodes[1], 1);
 
-	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	let mut events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), if deliver_bs_raa { 4 } else { 3 });
-	match events[if deliver_bs_raa { 1 } else { 0 }] {
-		MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. } } => {},
-		_ => panic!("Unexpected event"),
-	}
-	match events[if deliver_bs_raa { 2 } else { 1 }] {
-		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage { channel_id, ref data } }, node_id: _ } => {
-			assert_eq!(channel_id, chan_2.2);
-			assert_eq!(data.as_str(), "Channel closed because commitment or closing transaction was confirmed on chain.");
-		},
-		_ => panic!("Unexpected event"),
-	}
-	if deliver_bs_raa {
-		match events[0] {
+
+	let events = if deliver_bs_raa {
+		let (nodes_2_event, events) = remove_first_msg_event_to_node(nodes[2].node.get_our_node_id(), &events);
+		match nodes_2_event {
 			MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, ref update_fulfill_htlcs, ref update_fail_malformed_htlcs, .. } } => {
 				assert_eq!(nodes[2].node.get_our_node_id(), *node_id);
 				assert_eq!(update_add_htlcs.len(), 1);
@@ -3242,8 +3240,20 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 			},
 			_ => panic!("Unexpected event"),
 		}
+		events
+	} else { events };
+
+	let (nodes_2_event, events) = remove_first_msg_event_to_node(nodes[2].node.get_our_node_id(), &events);
+	match nodes_2_event {
+		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { msg: msgs::ErrorMessage { channel_id, ref data } }, node_id: _ } => {
+			assert_eq!(channel_id, chan_2.2);
+			assert_eq!(data.as_str(), "Channel closed because commitment or closing transaction was confirmed on chain.");
+		},
+		_ => panic!("Unexpected event"),
 	}
-	match events[if deliver_bs_raa { 3 } else { 2 }] {
+
+	let (nodes_0_event, events) = remove_first_msg_event_to_node(nodes[0].node.get_our_node_id(), &events);
+	match nodes_0_event {
 		MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fail_htlcs, ref update_fulfill_htlcs, ref update_fail_malformed_htlcs, ref commitment_signed, .. } } => {
 			assert!(update_add_htlcs.is_empty());
 			assert_eq!(update_fail_htlcs.len(), 3);
@@ -3285,6 +3295,12 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(deliver_bs_raa: bool, use
 				_ => panic!("Unexpected event"),
 			}
 		},
+		_ => panic!("Unexpected event"),
+	}
+
+	// Ensure that the last remaining message event is the BroadcastChannelUpdate msg for chan_2
+	match events[0] {
+		MessageSendEvent::BroadcastChannelUpdate { msg: msgs::ChannelUpdate { .. } } => {},
 		_ => panic!("Unexpected event"),
 	}
 
@@ -4673,15 +4689,15 @@ fn test_onchain_to_onchain_claim() {
 	check_added_monitors!(nodes[1], 1);
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 3);
-	match msg_events[0] {
-		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
-		_ => panic!("Unexpected event"),
-	}
-	match msg_events[1] {
+	let (nodes_2_event, msg_events) = remove_first_msg_event_to_node(nodes[2].node.get_our_node_id(), &msg_events);
+	let (nodes_0_event, msg_events) = remove_first_msg_event_to_node(nodes[0].node.get_our_node_id(), &msg_events);
+
+	match nodes_2_event {
 		MessageSendEvent::HandleError { action: ErrorAction::SendErrorMessage { .. }, node_id: _ } => {},
 		_ => panic!("Unexpected event"),
 	}
-	match msg_events[2] {
+
+	match nodes_0_event {
 		MessageSendEvent::UpdateHTLCs { ref node_id, updates: msgs::CommitmentUpdate { ref update_add_htlcs, ref update_fulfill_htlcs, ref update_fail_htlcs, ref update_fail_malformed_htlcs, .. } } => {
 			assert!(update_add_htlcs.is_empty());
 			assert!(update_fail_htlcs.is_empty());
@@ -4691,6 +4707,13 @@ fn test_onchain_to_onchain_claim() {
 		},
 		_ => panic!("Unexpected event"),
 	};
+
+	// Ensure that the last remaining message event is the BroadcastChannelUpdate msg for chan_2
+	match msg_events[0] {
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
+		_ => panic!("Unexpected event"),
+	}
+
 	// Broadcast A's commitment tx on B's chain to see if we are able to claim inbound HTLC with our HTLC-Success tx
 	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_1.2);
 	mine_transaction(&nodes[1], &commitment_tx[0]);
@@ -9326,7 +9349,8 @@ fn test_double_partial_claim() {
 
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
-	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), false, None);
+	let (node_1_msgs, _events) = remove_first_msg_event_to_node(nodes[1].node.get_our_node_id(), &events);
+	pass_along_path(&nodes[0], &[&nodes[1], &nodes[3]], 15_000_000, payment_hash, Some(payment_secret), node_1_msgs, false, None);
 
 	// At this point nodes[3] has received one half of the payment, and the user goes to handle
 	// that PaymentClaimable event they got hours ago and never handled...we should refuse to claim.

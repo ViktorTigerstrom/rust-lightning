@@ -554,6 +554,93 @@ macro_rules! get_htlc_update_msgs {
 	}
 }
 
+/// Fetches the first `msg_event` to the passed `node_id` in the passed `msg_events` vec.
+/// Returns the `msg_event`, along with an updated `msg_events` vec with the message removed.
+pub fn remove_first_msg_event_to_node(msg_node_id: PublicKey, msg_events: &Vec<MessageSendEvent>) -> (MessageSendEvent, Vec<MessageSendEvent>) {
+	if let Some(res) = try_remove_first_msg_event_to_node(msg_node_id, msg_events) {
+		res
+	} else {
+		panic!("Couldn't find any message to the node. Use try_remove_first_msg_event_to_node instead.")
+	}
+}
+
+/// Attempts to fetch the first `msg_event` to the passed `node_id` in the passed `msg_events` vec.
+/// If successful, returns the `msg_event`, along with an updated `msg_events` vec with the message
+/// removed. Note that even though `BroadcastChannelAnnouncement` and `BroadcastChannelUpdate`
+/// `msg_events` are stored under specific peers, this function does not fetch such `msg_events` as
+/// such messages are intended to all peers.
+pub fn try_remove_first_msg_event_to_node(msg_node_id: PublicKey, msg_events: &Vec<MessageSendEvent>) -> Option<(MessageSendEvent, Vec<MessageSendEvent>)> {
+	let ev_index = msg_events.iter().position(|e| { match e {
+		MessageSendEvent::SendAcceptChannel { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+		MessageSendEvent::SendOpenChannel { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+		MessageSendEvent::SendFundingCreated { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+		MessageSendEvent::SendFundingSigned { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+		MessageSendEvent::SendChannelReady { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+		MessageSendEvent::SendAnnouncementSignatures { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+		MessageSendEvent::UpdateHTLCs { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+		MessageSendEvent::SendRevokeAndACK { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+		MessageSendEvent::SendClosingSigned { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+		MessageSendEvent::SendShutdown { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+		MessageSendEvent::SendChannelReestablish { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+		MessageSendEvent::SendChannelAnnouncement { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+		MessageSendEvent::BroadcastChannelAnnouncement { .. } => {
+			false
+		},
+		MessageSendEvent::BroadcastChannelUpdate { .. } => {
+			false
+		},
+		MessageSendEvent::SendChannelUpdate { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+		MessageSendEvent::HandleError { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+		MessageSendEvent::SendChannelRangeQuery { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+		MessageSendEvent::SendShortIdsQuery { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+		MessageSendEvent::SendReplyChannelRange { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+		MessageSendEvent::SendGossipTimestampFilter { ref node_id, .. } => {
+			*node_id == msg_node_id
+		},
+	}});
+	if ev_index.is_some() {
+		let mut updated_msg_events = msg_events.to_vec();
+		let ev = updated_msg_events.remove(ev_index.unwrap());
+		Some((ev, updated_msg_events))
+	} else {
+		None
+	}
+}
+
 #[cfg(test)]
 macro_rules! get_channel_ref {
 	($node: expr, $counterparty_node: expr, $per_peer_state_lock: ident, $peer_state_lock: ident, $channel_id: expr) => {
@@ -1271,13 +1358,14 @@ macro_rules! commitment_signed_dance {
 			let (bs_revoke_and_ack, extra_msg_option) = {
 				let events = $node_b.node.get_and_clear_pending_msg_events();
 				assert!(events.len() <= 2);
-				(match events[0] {
+				let (node_a_event, events) = remove_first_msg_event_to_node($node_a.node.get_our_node_id(), &events);
+				(match node_a_event {
 					MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
 						assert_eq!(*node_id, $node_a.node.get_our_node_id());
 						(*msg).clone()
 					},
 					_ => panic!("Unexpected event"),
-				}, events.get(1).map(|e| e.clone()))
+				}, events.get(0).map(|e| e.clone()))
 			};
 			check_added_monitors!($node_b, 1);
 			if $fail_backwards {
@@ -1828,7 +1916,9 @@ pub fn pass_along_path<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_path
 pub fn pass_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, expected_route: &[&[&Node<'a, 'b, 'c>]], recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret) {
 	let mut events = origin_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), expected_route.len());
-	for (path_idx, (ev, expected_path)) in events.drain(..).zip(expected_route.iter()).enumerate() {
+	for (path_idx, expected_path) in expected_route.iter().enumerate() {
+		let (ev, updated_events) = remove_first_msg_event_to_node(expected_path[0].node.get_our_node_id(), &events);
+		events = updated_events;
 		// Once we've gotten through all the HTLCs, the last one should result in a
 		// PaymentClaimable (but each previous one should not!), .
 		let expect_payment = path_idx == expected_route.len() - 1;
@@ -1879,10 +1969,24 @@ pub fn do_claim_payment_along_route<'a, 'b, 'c>(origin_node: &Node<'a, 'b, 'c>, 
 		}
 	}
 	let mut per_path_msgs: Vec<((msgs::UpdateFulfillHTLC, msgs::CommitmentSigned), PublicKey)> = Vec::with_capacity(expected_paths.len());
-	let events = expected_paths[0].last().unwrap().node.get_and_clear_pending_msg_events();
+	let mut events = expected_paths[0].last().unwrap().node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), expected_paths.len());
-	for ev in events.iter() {
-		per_path_msgs.push(msgs_from_ev!(ev));
+
+	let mut expected_paths_msg_order = vec![origin_node.node.get_our_node_id()];
+
+	for expected_path in expected_paths.iter() {
+		for path_node in expected_path.iter() {
+			expected_paths_msg_order.push(path_node.node.get_our_node_id());
+		}
+	}
+
+	for msg_node_id in expected_paths_msg_order.iter() {
+		// Note that the expected_paths_msg_order contains more nodes than msg_events in events,
+		// as it's only the intended order for the messages that actually exists.
+		if let Some((ev, updated_events)) = try_remove_first_msg_event_to_node(*msg_node_id, &events) {
+			per_path_msgs.push(msgs_from_ev!(&ev));
+			events = updated_events;
+		}
 	}
 
 	for (expected_route, (path_msgs, next_hop)) in expected_paths.iter().zip(per_path_msgs.drain(..)) {
