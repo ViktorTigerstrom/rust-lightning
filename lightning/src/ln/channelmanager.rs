@@ -285,10 +285,10 @@ struct ReceiveError {
 
 type ShutdownResult = (Option<(OutPoint, ChannelMonitorUpdate)>, Vec<(HTLCSource, PaymentHash, PublicKey, [u8; 32])>);
 
-/// Error type returned across the channel_state mutex boundary. When an Err is generated for a
+/// Error type returned across the peer_state mutex boundary. When an Err is generated for a
 /// Channel, we generally end up with a ChannelError::Close for which we have to close the channel
 /// immediately (ie with no further calls on it made). Thus, this step happens inside a
-/// channel_state lock. We then return the set of things that need to be done outside the lock in
+/// peer_state lock. We then return the set of things that need to be done outside the lock in
 /// this struct and call handle_error!() on it.
 
 struct MsgHandleErrInternal {
@@ -2417,7 +2417,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	/// public, and thus should be called whenever the result is going to be passed out in a
 	/// [`MessageSendEvent::BroadcastChannelUpdate`] event.
 	///
-	/// May be called with channel_state already locked!
+	/// May be called with peer_state already locked!
 	fn get_channel_update_for_broadcast(&self, chan: &Channel<<K::Target as KeysInterface>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		if !chan.should_announce() {
 			return Err(LightningError {
@@ -2436,7 +2436,7 @@ impl<M: Deref, T: Deref, K: Deref, F: Deref, L: Deref> ChannelManager<M, T, K, F
 	/// is public (only returning an Err if the channel does not yet have an assigned short_id),
 	/// and thus MUST NOT be called unless the recipient of the resulting message has already
 	/// provided evidence that they know about the existence of the channel.
-	/// May be called with channel_state already locked!
+	/// May be called with peer_state already locked!
 	fn get_channel_update_for_unicast(&self, chan: &Channel<<K::Target as KeysInterface>::Signer>) -> Result<msgs::ChannelUpdate, LightningError> {
 		log_trace!(self.logger, "Attempting to generate channel update for channel {}", log_bytes!(chan.channel_id()));
 		let short_channel_id = match chan.get_short_channel_id().or(chan.latest_inbound_scid_alias()) {
